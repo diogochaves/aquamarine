@@ -505,6 +505,7 @@ namespace Aquamarine {
         bool     updateSecondaryRendererState(DRMFBList* retired = nullptr);
         void     dropRendererState(DRMFBList* retired = nullptr);
         void     beforePrimarySwitch();
+        void     release(bool destructing = false);
         bool     afterPrimarySwitch(Hyprutils::Memory::CSharedPointer<CDRMBackend> newPrimary);
         bool     grabFormats();
         bool     shouldBlit();
@@ -534,6 +535,7 @@ namespace Aquamarine {
         } rendererState;
 
         bool                                                          rendererRequired = true;
+        bool                                                          released         = false;
         eBackendGPUDriver                                             driver           = AQ_BACKEND_GPU_DRIVER_UNKNOWN;
 
         Hyprutils::Memory::CWeakPointer<CBackend>                     backend;

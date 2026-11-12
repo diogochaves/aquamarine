@@ -33,6 +33,9 @@ namespace Aquamarine {
 
         int                                                      fd       = -1;
         int                                                      deviceID = -1;
+        // give the device back to the seat and close our fds; the object stays, with fd = -1
+        void                                                     closeDevice();
+
         dev_t                                                    dev;
         std::string                                              path;
 

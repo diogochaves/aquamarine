@@ -1,12 +1,16 @@
 // Manual check for CBackend::switchPrimary(): needs a seat with two KMS GPUs, so it is not a ctest.
 // Draws solid red on every output, makes the second GPU the primary, then draws green.
-// usage: switchPrimary [seconds per phase = 3] [back]   ("back" adds a third phase, blue, on the first GPU again)
+// usage: switchPrimary [seconds per phase = 3] [back|release]
+//   back:    a third phase, blue, with the first GPU as the primary again
+//   release: after the switch, releaseGpu(first) (phase 2, blue, on what is left), then acquireGpu() it
+//            and make it the primary again (phase 3, white)
 
 #include <aquamarine/backend/Backend.hpp>
 #include <aquamarine/output/Output.hpp>
 #include <aquamarine/allocator/Swapchain.hpp>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <poll.h>
@@ -20,14 +24,15 @@ using namespace Aquamarine;
 
 struct SOut {
     SP<IOutput>         output;
-    CHyprSignalListener frame, needsFrame;
+    CHyprSignalListener frame, needsFrame, destroy;
+    bool                dead = false;
     std::map<int, int>  ok, failed, drawn; // per phase
 };
 
 static SP<CBackend>      backend;
 static std::vector<SOut> outs;
 static int               phase     = 0;
-static const uint32_t    COLORS[3] = {0xFFFF0000, 0xFF00FF00, 0xFF0000FF};
+static const uint32_t    COLORS[4] = {0xFFFF0000, 0xFF00FF00, 0xFF0000FF, 0xFFFFFFFF};
 
 static void              log(eBackendLogLevel level, std::string msg) {
     if (level >= AQ_LOG_DEBUG)
@@ -41,7 +46,22 @@ static std::string nodeOf(int fd) {
     return s;
 }
 
+// fds of this process that point at a device node whose path starts with prefix
+static int fdsOn(const std::string& prefix) {
+    int             n = 0;
+    std::error_code ec;
+    for (auto const& e : std::filesystem::directory_iterator("/proc/self/fd", ec)) {
+        const auto TARGET = std::filesystem::read_symlink(e.path(), ec);
+        if (!ec && TARGET.string().starts_with(prefix))
+            n++;
+    }
+    return n;
+}
+
 static void render(SOut& o) {
+    if (o.dead)
+        return;
+
     const auto MODE = o.output->state->state().mode;
     if (!MODE)
         return;
@@ -97,13 +117,20 @@ static void onNewOutput(SP<IOutput> output) {
     auto  NAME = output->name;
     auto  find = [NAME]() -> SOut* {
         for (auto& x : outs) {
-            if (x.output->name == NAME)
+            if (!x.dead && x.output->name == NAME)
                 return &x;
         }
         return nullptr;
     };
     o.frame      = output->events.frame.listen([find] { render(*find()); });
     o.needsFrame = output->events.needsFrame.listen([find] { find()->output->scheduleFrame(); });
+    o.destroy    = output->events.destroy.listen([find] {
+        std::cout << "[test] output " << find()->output->name << " destroyed\n";
+        find()->dead = true;
+    });
+
+    if (backend->ready)
+        render(o);
 }
 
 static void dispatchFor(std::chrono::milliseconds dur) {
@@ -124,7 +151,8 @@ static void dispatchFor(std::chrono::milliseconds dur) {
 
 int main(int argc, char** argv) {
     const auto      SECS = std::chrono::seconds(argc > 1 ? std::stoi(argv[1]) : 3);
-    const bool      BACK = argc > 2 && std::string(argv[2]) == "back";
+    const bool      BACK    = argc > 2 && std::string(argv[2]) == "back";
+    const bool      RELEASE = argc > 2 && std::string(argv[2]) == "release";
 
     SBackendOptions options;
     options.logFunction = log;
@@ -166,8 +194,9 @@ int main(int argc, char** argv) {
         check(std::format("phase {}: drmFD() is {} (want {})", phase, nodeOf(backend->drmFD()), want), nodeOf(backend->drmFD()) == want);
         check(std::format("phase {}: primaryAllocator is on {}", phase, nodeOf(backend->primaryAllocator->drmFD())), nodeOf(backend->primaryAllocator->drmFD()) == want);
         for (auto& o : outs)
-            check(std::format("phase {}: {}: {} commits ok, {} failed, {} drawn by CPU map", phase, o.output->name, o.ok[phase], o.failed[phase], o.drawn[phase]),
-                  o.ok[phase] > 10 && o.failed[phase] <= 2);
+            if (!o.dead)
+                check(std::format("phase {}: {}: {} commits ok, {} failed, {} drawn by CPU map", phase, o.output->name, o.ok[phase], o.failed[phase], o.drawn[phase]),
+                      o.ok[phase] > 10 && o.failed[phase] <= 2);
     };
 
     for (auto& o : outs)
@@ -188,6 +217,47 @@ int main(int argc, char** argv) {
         check("primaryChanged emitted twice", switches == 2);
         dispatchFor(SECS);
         state(NODE0);
+    }
+
+    if (RELEASE) {
+        // by-path names, so the count doesn't depend on which card number the GPU got
+        const auto  CARD0 = NODE0;
+        std::string render0;
+        for (auto const& e : std::filesystem::directory_iterator("/dev/dri/by-path")) {
+            if (!e.path().string().ends_with("-card") || std::filesystem::canonical(e.path()).string() != CARD0)
+                continue;
+            auto r  = e.path().string();
+            render0 = std::filesystem::canonical(r.substr(0, r.size() - 4) + "render").string();
+        }
+        auto fds = [&](const std::string& when) {
+            std::cout << std::format("[test] fds {}: {} on {}, {} on {}, {} on /dev/nvidia*\n", when, fdsOn(CARD0), CARD0, fdsOn(render0), render0, fdsOn("/dev/nvidia"));
+        };
+
+        phase = 2;
+        fds("before release");
+        check("releaseGpu(second) is refused: it is the primary", !backend->releaseGpu(second));
+        check("releaseGpu(first)", backend->releaseGpu(first));
+        fds("after release");
+        check(std::format("no fd left on {}", CARD0), fdsOn(CARD0) == 0);
+        check("one DRM implementation left", backend->getImplementations().size() == 1);
+        check("drmFD() still the second GPU", nodeOf(backend->drmFD()) == NODE1);
+        backend->onNewGpu(NODE0);
+        check("a hot-add of the released GPU is ignored", backend->getImplementations().size() == 1);
+        first.reset();
+        fds("after the last reference");
+        dispatchFor(SECS);
+        state(NODE1);
+
+        phase = 3;
+        check("acquireGpu(first)", backend->acquireGpu(NODE0));
+        check("two DRM implementations again", backend->getImplementations().size() == 2);
+        first = backend->getImplementations().back();
+        check("the acquired GPU has the second as its primary", first->getPrimary().lock() == second);
+        dispatchFor(std::chrono::seconds(1));
+        check("switchPrimary(first) after acquire", backend->switchPrimary(first));
+        dispatchFor(SECS);
+        state(NODE0);
+        fds("at the end");
     }
 
     std::cout << "[test] " << (pass ? "PASS" : "FAILED") << "\n";

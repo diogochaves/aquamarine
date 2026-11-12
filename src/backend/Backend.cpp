@@ -6,6 +6,8 @@
 #include <aquamarine/allocator/GBM.hpp>
 #include <hyprutils/os/FileDescriptor.hpp>
 #include <algorithm>
+#include <filesystem>
+#include <hyprutils/string/VarList.hpp>
 #include <ranges>
 #include <sys/timerfd.h>
 #include <ctime>
@@ -305,18 +307,94 @@ void Aquamarine::CBackend::dispatchIdle() {
     updateIdleTimer();
 }
 
+static std::string canonicalPath(const std::string& path) {
+    std::error_code ec;
+    const auto      CANONICAL = std::filesystem::canonical(path, ec);
+    return ec ? path : CANONICAL.string();
+}
+
+// With AQ_DRM_DEVICES set, a GPU that appears later is only taken if it is on that list,
+// matched by canonical path as CDRMBackend::scanGPUs does at start.
+static bool listedInEnv(const std::string& path) {
+    const auto EXPLICIT = getenv("AQ_DRM_DEVICES");
+    if (!EXPLICIT)
+        return true;
+
+    Hyprutils::String::CVarList devices(EXPLICIT, 0, ':', true);
+    return std::ranges::any_of(devices, [&](const auto& d) { return canonicalPath(d) == canonicalPath(path); });
+}
+
 void Aquamarine::CBackend::onNewGpu(std::string path) {
+    if (std::ranges::contains(releasedGpus, canonicalPath(path))) {
+        log(AQ_LOG_DEBUG, std::format("drm: Ignoring hot-added device {}, it was released", path));
+        return;
+    }
+
+    if (!listedInEnv(path)) {
+        log(AQ_LOG_DEBUG, std::format("drm: Ignoring hot-added device {}, not in AQ_DRM_DEVICES ({})", path, getenv("AQ_DRM_DEVICES")));
+        return;
+    }
+
+    addGpu(path);
+}
+
+bool Aquamarine::CBackend::acquireGpu(const std::string& path) {
+    if (!ready || !session)
+        return false;
+
+    for (auto const& i : implementations) {
+        if (i->type() == AQ_BACKEND_DRM && canonicalPath(((CDRMBackend*)i.get())->gpu->path) == canonicalPath(path)) {
+            log(AQ_LOG_DEBUG, std::format("acquireGpu: {} is in use already", path));
+            return true;
+        }
+    }
+
+    std::erase(releasedGpus, canonicalPath(path));
+    return addGpu(path);
+}
+
+bool Aquamarine::CBackend::releaseGpu(SP<IBackendImplementation> gpu_) {
+    if (!gpu_ || gpu_->type() != AQ_BACKEND_DRM || std::ranges::find(implementations, gpu_) == implementations.end()) {
+        log(AQ_LOG_ERROR, "releaseGpu: not a DRM backend in use");
+        return false;
+    }
+
+    const auto DRM = ((CDRMBackend*)gpu_.get())->self.lock();
+
+    if (!DRM->primary) {
+        log(AQ_LOG_ERROR, std::format("releaseGpu: {} is the primary, switchPrimary() away from it first", DRM->gpuName));
+        return false;
+    }
+
+    log(AQ_LOG_DEBUG, std::format("releaseGpu: releasing {}", DRM->gpuName));
+
+    // outputs go (the consumer hears their destroy), then the renderer and allocators
+    DRM->release();
+
+    std::erase(implementations, gpu_);
+    std::erase(session->sessionDevices, DRM->gpu);
+    releasedGpus.emplace_back(canonicalPath(DRM->gpu->path));
+
+    // the backend object may outlive this (a consumer's reference, a framebuffer being dropped): close the device itself
+    DRM->gpu->closeDevice();
+
+    events.pollFDsChanged.emit();
+
+    return true;
+}
+
+bool Aquamarine::CBackend::addGpu(const std::string& path) {
     const auto primary    = std::ranges::find_if(implementations, [](SP<IBackendImplementation> value) { return value->type() == Aquamarine::AQ_BACKEND_DRM; });
     const auto primaryDrm = primary != implementations.end() ? ((Aquamarine::CDRMBackend*)(*primary).get())->self.lock() : nullptr;
 
     auto       ref = CDRMBackend::fromGpu(path, self.lock(), primaryDrm);
     if (!ref) {
         log(AQ_LOG_ERROR, std::format("DRM Backend failed for device {}", path));
-        return;
+        return false;
     }
     if (!ref->start()) {
         log(AQ_LOG_ERROR, std::format("Couldn't start DRM Backend for device {}", path));
-        return;
+        return false;
     }
 
     implementations.emplace_back(ref);
@@ -324,6 +402,8 @@ void Aquamarine::CBackend::onNewGpu(std::string path) {
 
     ref->onReady();        // Renderer created here
     ref->recheckOutputs(); // Now we can recheck outputs
+
+    return true;
 }
 
 bool Aquamarine::CBackend::switchPrimary(SP<IBackendImplementation> newPrimary_) {

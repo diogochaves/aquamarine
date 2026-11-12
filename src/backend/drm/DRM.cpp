@@ -381,18 +381,44 @@ std::vector<SP<CDRMBackend>> Aquamarine::CDRMBackend::attempt(SP<CBackend> backe
 }
 
 Aquamarine::CDRMBackend::~CDRMBackend() {
+    release(true);
+}
+
+void Aquamarine::CDRMBackend::release(bool destructing) {
+    if (released)
+        return;
+
+    released = true;
+
+    listeners.sessionActivate.reset();
+    listeners.gpuChange.reset();
+    listeners.gpuRemove.reset();
+
     stopCommitThread();
 
     for (auto& conn : connectors) {
+        // a consumer may keep the output object after its destroy event: it must not keep buffers of this GPU with it
+        const auto OUTPUT = conn->output;
+
+        if (OUTPUT && OUTPUT->lease)
+            OUTPUT->lease->terminate();
+
         conn->disconnect();
+
+        // (not from the destructor: CBackend may be going away, and the swapchain logs through it)
+        if (OUTPUT && !destructing)
+            OUTPUT->releaseMgpuResources();
+
         conn.reset();
     }
+    connectors.clear();
 
     if (rendererState.allocator)
         rendererState.allocator->destroyBuffers();
 
     rendererState.renderer.reset();
     rendererState.allocator.reset();
+    dumbAllocator.reset();
 }
 
 bool Aquamarine::CDRMBackend::initCommitThread() {
@@ -1406,6 +1432,9 @@ bool Aquamarine::CDRMBackend::start() {
 }
 
 std::vector<Hyprutils::Memory::CSharedPointer<SPollFD>> Aquamarine::CDRMBackend::pollFDs() {
+    if (released)
+        return {};
+
     std::vector<SP<SPollFD>> fds = {makeShared<SPollFD>(gpu->fd, [this]() { dispatchEvents(); })};
     if (commitThread)
         fds.emplace_back(makeShared<SPollFD>(commitThread->completionFD(), [this]() { dispatchCommitResults(); }));
@@ -3454,6 +3483,9 @@ void Aquamarine::CDRMFB::closeHandles() {
 
     handlesClosed = true;
 
+    if (!backend || !backend->gpu || backend->gpu->fd < 0)
+        return;
+
     std::vector<uint32_t> closed;
 
     for (size_t i = 0; i < 4; ++i) {
@@ -3482,6 +3514,12 @@ void Aquamarine::CDRMFB::drop() {
         return;
 
     dropped = true;
+
+    // the backend went first (CBackend::releaseGpu): the kernel dropped the fb with the device
+    if (!backend || !backend->gpu || backend->gpu->fd < 0) {
+        handlesClosed = true;
+        return;
+    }
 
     closeHandles();
 

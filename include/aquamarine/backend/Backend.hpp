@@ -156,6 +156,18 @@ namespace Aquamarine {
         */
         bool switchPrimary(Hyprutils::Memory::CSharedPointer<IBackendImplementation> newPrimary);
 
+        /*
+            Let go of a GPU: its outputs are disabled and destroyed, its renderer and allocators dropped,
+            its device handed back to the seat and closed, and the backend removed from the implementations.
+            Refused for the primary: switchPrimary() away from it first. Buffers the consumer still holds
+            from an allocator on that GPU keep that allocator's fd open until they are gone.
+            The GPU is then ignored if udev announces it again, until acquireGpu().
+        */
+        bool releaseGpu(Hyprutils::Memory::CSharedPointer<IBackendImplementation> gpu);
+
+        /* Take a GPU (again): what a hot-add does, for a device releaseGpu() let go of or AQ_DRM_DEVICES leaves out. */
+        bool acquireGpu(const std::string& path);
+
         struct {
             Hyprutils::Signal::CSignalT<Hyprutils::Memory::CSharedPointer<IOutput>>     newOutput;
             Hyprutils::Signal::CSignalT<Hyprutils::Memory::CSharedPointer<IPointer>>    newPointer;
@@ -212,5 +224,9 @@ namespace Aquamarine {
         struct {
             Hyprutils::Signal::CSignalT<> primaryChanged;
         } gpuEvents;
+
+      private:
+        bool                     addGpu(const std::string& path);
+        std::vector<std::string> releasedGpus; // canonical paths
     };
 };
