@@ -503,6 +503,9 @@ namespace Aquamarine {
         bool     initResources();
         bool     initMgpu();
         bool     updateSecondaryRendererState(DRMFBList* retired = nullptr);
+        void     dropRendererState(DRMFBList* retired = nullptr);
+        void     beforePrimarySwitch();
+        bool     afterPrimarySwitch(Hyprutils::Memory::CSharedPointer<CDRMBackend> newPrimary);
         bool     grabFormats();
         bool     shouldBlit();
         void     scanConnectors();

@@ -146,6 +146,16 @@ namespace Aquamarine {
         // called when a new DRM card is hotplugged
         void onNewGpu(std::string path);
 
+        /*
+            Make another started DRM backend the primary one: the GPU the consumer renders on.
+            A new primaryAllocator is made on it, every DRM backend is re-pointed at it, and every
+            output gets a new swapchain, so buffers taken from the old ones must not be committed again.
+            drmFD(), drmRenderNodeFD() and getPrimaryRenderFormats() follow. Emits gpuEvents.primaryChanged
+            once done; the consumer then has to rebuild its renderer on the new fds and render a frame.
+            Returns false, changing nothing, if the backend can't be a primary.
+        */
+        bool switchPrimary(Hyprutils::Memory::CSharedPointer<IBackendImplementation> newPrimary);
+
         struct {
             Hyprutils::Signal::CSignalT<Hyprutils::Memory::CSharedPointer<IOutput>>     newOutput;
             Hyprutils::Signal::CSignalT<Hyprutils::Memory::CSharedPointer<IPointer>>    newPointer;
@@ -196,5 +206,11 @@ namespace Aquamarine {
         } m_sEventLoopInternals;
 
         friend class CDRMBackend;
+
+      public:
+        // kept after every other member so the layout above matches upstream's
+        struct {
+            Hyprutils::Signal::CSignalT<> primaryChanged;
+        } gpuEvents;
     };
 };

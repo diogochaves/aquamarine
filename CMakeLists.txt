@@ -167,6 +167,11 @@ add_test(
   COMMAND commitThread "commitThread")
 add_dependencies(tests commitThread)
 
+# manual: needs a seat with two KMS GPUs
+add_executable(switchPrimary "tests/SwitchPrimary.cpp")
+target_link_libraries(switchPrimary PRIVATE PkgConfig::deps aquamarine)
+add_dependencies(tests switchPrimary)
+
 # Installation
 install(TARGETS aquamarine)
 install(DIRECTORY "include/aquamarine" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

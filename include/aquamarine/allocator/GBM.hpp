@@ -34,6 +34,10 @@ namespace Aquamarine {
         void*        gboMapping = nullptr;
         SDMABUFAttrs attrs{.success = false};
 
+        // a bo must go before its gbm device: a buffer can outlive the backend's use of its
+        // allocator (CBackend::switchPrimary), so it keeps it alive.
+        Hyprutils::Memory::CSharedPointer<CGBMAllocator> allocatorRef;
+
         friend class CGBMAllocator;
     };
 

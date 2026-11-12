@@ -5,6 +5,7 @@
 #include <aquamarine/backend/Null.hpp>
 #include <aquamarine/allocator/GBM.hpp>
 #include <hyprutils/os/FileDescriptor.hpp>
+#include <algorithm>
 #include <ranges>
 #include <sys/timerfd.h>
 #include <ctime>
@@ -323,6 +324,79 @@ void Aquamarine::CBackend::onNewGpu(std::string path) {
 
     ref->onReady();        // Renderer created here
     ref->recheckOutputs(); // Now we can recheck outputs
+}
+
+bool Aquamarine::CBackend::switchPrimary(SP<IBackendImplementation> newPrimary_) {
+    if (!ready || !newPrimary_ || newPrimary_->type() != AQ_BACKEND_DRM || std::ranges::find(implementations, newPrimary_) == implementations.end()) {
+        log(AQ_LOG_ERROR, "switchPrimary: not a started DRM backend");
+        return false;
+    }
+
+    const auto NEW_PRIMARY = ((CDRMBackend*)newPrimary_.get())->self.lock();
+
+    if (!NEW_PRIMARY->primary) {
+        log(AQ_LOG_DEBUG, std::format("switchPrimary: {} is the primary already", NEW_PRIMARY->gpuName));
+        return true;
+    }
+
+    if (!NEW_PRIMARY->rendererRequired) {
+        log(AQ_LOG_ERROR, std::format("switchPrimary: {} has no renderer, it can't be the primary", NEW_PRIMARY->gpuName));
+        return false;
+    }
+
+    const int FD = reopenDRMNode(NEW_PRIMARY->gpu->fd);
+    if (FD < 0) {
+        log(AQ_LOG_ERROR, std::format("switchPrimary: couldn't reopen {}", NEW_PRIMARY->gpuName));
+        return false;
+    }
+
+    auto newAllocator = CGBMAllocator::create(FD, self);
+    if (!newAllocator) {
+        log(AQ_LOG_ERROR, std::format("switchPrimary: no allocator on {}", NEW_PRIMARY->gpuName));
+        close(FD);
+        return false;
+    }
+
+    log(AQ_LOG_DEBUG, std::format("switchPrimary: {} becomes the primary", NEW_PRIMARY->gpuName));
+
+    std::vector<SP<CDRMBackend>> drmBackends;
+    for (auto const& i : implementations) {
+        if (i->type() == AQ_BACKEND_DRM)
+            drmBackends.emplace_back(((CDRMBackend*)i.get())->self.lock());
+    }
+
+    for (auto const& b : drmBackends) {
+        b->beforePrimarySwitch();
+    }
+
+    // buffers still alive keep the old allocator (and its fd) until they go
+    primaryAllocator = newAllocator;
+
+    // the primary is the first DRM implementation: drmFD() and friends, and onNewGpu, rely on it
+    const auto FIRST_DRM = std::ranges::find_if(implementations, [](const auto& i) { return i->type() == AQ_BACKEND_DRM; });
+    std::rotate(FIRST_DRM, std::ranges::find(implementations, newPrimary_), std::ranges::find(implementations, newPrimary_) + 1);
+
+    // the new primary first: the others blit through its renderer
+    bool ok = NEW_PRIMARY->afterPrimarySwitch(NEW_PRIMARY);
+    for (auto const& b : drmBackends) {
+        if (b != NEW_PRIMARY)
+            ok = b->afterPrimarySwitch(NEW_PRIMARY) && ok;
+    }
+
+    if (!ok)
+        log(AQ_LOG_ERROR, "switchPrimary: a backend failed to rebuild its renderer");
+
+    events.pollFDsChanged.emit();
+    gpuEvents.primaryChanged.emit();
+
+    for (auto const& b : drmBackends) {
+        for (auto const& c : b->connectors) {
+            if (c->output)
+                c->output->scheduleFrame(IOutput::AQ_SCHEDULE_NEEDS_FRAME);
+        }
+    }
+
+    return true;
 }
 
 // Yoinked from wlroots, render/allocator/allocator.c

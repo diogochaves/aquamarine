@@ -917,6 +917,12 @@ bool Aquamarine::CDRMBackend::updateSecondaryRendererState(DRMFBList* deferred) 
 
     backend->log(AQ_LOG_DEBUG, std::format("drm: Deinitializing secondary renderer on {}, no enabled outputs", gpu->path));
 
+    dropRendererState(deferred);
+
+    return true;
+}
+
+void Aquamarine::CDRMBackend::dropRendererState(DRMFBList* deferred) {
     DRMFBList retired;
     for (auto const& c : connectors) {
         c->releaseFBReferences(&retired);
@@ -940,8 +946,42 @@ bool Aquamarine::CDRMBackend::updateSecondaryRendererState(DRMFBList* deferred) 
                 buffer->backendUnpin();
         }
     }
+}
 
-    return true;
+void Aquamarine::CDRMBackend::beforePrimarySwitch() {
+    // nothing queued on the commit thread may outlive the renderers and swapchains we are about to drop
+    for (auto const& c : connectors) {
+        if (c->output)
+            cancelAsyncOutput(c->output.get(), true);
+    }
+
+    dropRendererState();
+}
+
+bool Aquamarine::CDRMBackend::afterPrimarySwitch(SP<CDRMBackend> newPrimary) {
+    primary = newPrimary == self ? nullptr : newPrimary;
+
+    // primary: a renderer on the new primary allocator. Secondary: its own, only while it has enabled outputs.
+    const bool  OK = updateSecondaryRendererState();
+
+    const auto& SWAPCHAIN_BACKEND = primary ? primary.lock() : self.lock();
+
+    for (auto const& c : connectors) {
+        if (!c->output)
+            continue;
+
+        // releaseMgpuResources() cleared it; keep what the consumer had asked for
+        auto options     = c->output->swapchain ? c->output->swapchain->currentOptions() : SSwapchainOptions{.length = 0, .scanout = true, .scanoutOutput = c->output};
+        options.multigpu = !!primary;
+
+        c->output->swapchain = CSwapchain::create(backend->primaryAllocator, SWAPCHAIN_BACKEND);
+        if (!c->output->swapchain->reconfigure(options))
+            backend->log(AQ_LOG_ERROR, std::format("drm: switchPrimary: failed to rebuild the swapchain of {}", c->output->name));
+
+        c->output->needsFrame = true;
+    }
+
+    return OK;
 }
 
 void Aquamarine::CDRMBackend::buildGlFormats(const std::vector<SGLFormat>& fmts) {

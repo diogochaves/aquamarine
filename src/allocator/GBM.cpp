@@ -66,6 +66,8 @@ Aquamarine::CGBMBuffer::CGBMBuffer(const SAllocatorBufferParams& params, Hypruti
     if (!allocator)
         return;
 
+    allocatorRef = allocator.lock();
+
     attrs.size   = params.size;
     attrs.format = params.format;
     size         = attrs.size;
