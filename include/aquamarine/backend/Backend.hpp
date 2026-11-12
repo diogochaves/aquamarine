@@ -150,8 +150,9 @@ namespace Aquamarine {
             Make another started DRM backend the primary one: the GPU the consumer renders on.
             A new primaryAllocator is made on it, every DRM backend is re-pointed at it, and every
             output gets a new swapchain, so buffers taken from the old ones must not be committed again.
-            drmFD(), drmRenderNodeFD() and getPrimaryRenderFormats() follow. Emits gpuEvents.primaryChanged
-            once done; the consumer then has to rebuild its renderer on the new fds and render a frame.
+            drmFD(), drmRenderNodeFD() and getPrimaryRenderFormats() follow. Emits gpuEvents.primaryChanging,
+            for the consumer to tear its renderer down, and gpuEvents.primaryChanged once done; the consumer
+            then has to rebuild its renderer on the new fds and render a frame.
             Returns false, changing nothing, if the backend can't be a primary.
         */
         bool switchPrimary(Hyprutils::Memory::CSharedPointer<IBackendImplementation> newPrimary);
@@ -222,6 +223,10 @@ namespace Aquamarine {
       public:
         // kept after every other member so the layout above matches upstream's
         struct {
+            // switchPrimary(), in order: aquamarine has dropped its renderers, and the consumer must now
+            // drop every EGL/GL object it has (a GPU's EGL display is shared with aquamarine's renderer on it)
+            Hyprutils::Signal::CSignalT<> primaryChanging;
+            // the new primary is in place: build the renderer on drmFD() / drmRenderNodeFD() again
             Hyprutils::Signal::CSignalT<> primaryChanged;
         } gpuEvents;
 

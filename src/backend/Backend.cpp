@@ -232,12 +232,12 @@ int Aquamarine::CBackend::drmFD() {
 }
 
 int Aquamarine::CBackend::drmRenderNodeFD() {
+    // the render node of the same implementation drmFD() answers for, never another GPU's
     for (auto const& i : implementations) {
-        int fd = i->drmRenderNodeFD();
-        if (fd < 0)
+        if (i->drmFD() < 0)
             continue;
 
-        return fd;
+        return i->drmRenderNodeFD();
     }
     return -1;
 }
@@ -448,6 +448,8 @@ bool Aquamarine::CBackend::switchPrimary(SP<IBackendImplementation> newPrimary_)
     for (auto const& b : drmBackends) {
         b->beforePrimarySwitch();
     }
+
+    gpuEvents.primaryChanging.emit();
 
     // buffers still alive keep the old allocator (and its fd) until they go
     primaryAllocator = newAllocator;

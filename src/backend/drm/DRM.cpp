@@ -262,6 +262,12 @@ SP<CDRMBackend> Aquamarine::CDRMBackend::fromGpu(std::string path, SP<CBackend> 
         return nullptr;
     }
 
+    // as scanGPUs does at start: without its render node, drmRenderNodeFD() is -1 for this GPU
+    if (auto* device = udev_device_new_from_devnum(backend->session->udevHandle, 'c', gpu->dev)) {
+        gpu->resolveMatchingRenderNode(device);
+        udev_device_unref(device);
+    }
+
     auto drmBackend  = SP<CDRMBackend>(new CDRMBackend(backend));
     drmBackend->self = drmBackend;
 
@@ -976,9 +982,16 @@ void Aquamarine::CDRMBackend::dropRendererState(DRMFBList* deferred) {
 
 void Aquamarine::CDRMBackend::beforePrimarySwitch() {
     // nothing queued on the commit thread may outlive the renderers and swapchains we are about to drop
+    savedSwapchainOptions.clear();
     for (auto const& c : connectors) {
-        if (c->output)
-            cancelAsyncOutput(c->output.get(), true);
+        if (!c->output)
+            continue;
+
+        cancelAsyncOutput(c->output.get(), true);
+
+        // dropRendererState() empties the swapchain: remember what the consumer had set
+        if (c->output->swapchain)
+            savedSwapchainOptions.emplace_back(c->output, c->output->swapchain->currentOptions());
     }
 
     dropRendererState();
@@ -996,8 +1009,12 @@ bool Aquamarine::CDRMBackend::afterPrimarySwitch(SP<CDRMBackend> newPrimary) {
         if (!c->output)
             continue;
 
-        // releaseMgpuResources() cleared it; keep what the consumer had asked for
-        auto options     = c->output->swapchain ? c->output->swapchain->currentOptions() : SSwapchainOptions{.length = 0, .scanout = true, .scanoutOutput = c->output};
+        // the same as the consumer had asked for
+        auto options = SSwapchainOptions{.length = 0, .scanout = true, .scanoutOutput = c->output};
+        for (auto const& [output, saved] : savedSwapchainOptions) {
+            if (output == c->output)
+                options = saved;
+        }
         options.multigpu = !!primary;
 
         c->output->swapchain = CSwapchain::create(backend->primaryAllocator, SWAPCHAIN_BACKEND);
@@ -1006,6 +1023,8 @@ bool Aquamarine::CDRMBackend::afterPrimarySwitch(SP<CDRMBackend> newPrimary) {
 
         c->output->needsFrame = true;
     }
+
+    savedSwapchainOptions.clear();
 
     return OK;
 }

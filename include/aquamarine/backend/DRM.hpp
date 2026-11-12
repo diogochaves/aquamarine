@@ -536,6 +536,7 @@ namespace Aquamarine {
 
         bool                                                          rendererRequired = true;
         bool                                                          released         = false;
+        std::vector<std::pair<Hyprutils::Memory::CWeakPointer<CDRMOutput>, SSwapchainOptions>> savedSwapchainOptions;
         eBackendGPUDriver                                             driver           = AQ_BACKEND_GPU_DRIVER_UNKNOWN;
 
         Hyprutils::Memory::CWeakPointer<CBackend>                     backend;
