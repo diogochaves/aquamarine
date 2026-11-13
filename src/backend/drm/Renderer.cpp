@@ -166,7 +166,8 @@ static const char* eglErrorToString(EGLint error) {
 }
 
 static void eglLog(EGLenum error, const char* command, EGLint type, EGLLabelKHR thread, EGLLabelKHR obj, const char* msg) {
-    gBackend->log(eglLogToLevel(type), std::format("[EGL] Command {} errored out with {} (0x{}): {}", command, eglErrorToString(error), error, msg));
+    // libglvnd reports an error that has no text with a null message; std::format on it is a crash
+    gBackend->log(eglLogToLevel(type), std::format("[EGL] Command {} errored out with {} (0x{}): {}", command ? command : "?", eglErrorToString(error), error, msg ? msg : ""));
 }
 
 static bool drmDeviceHasName(const drmDevice* device, const std::string& name) {
