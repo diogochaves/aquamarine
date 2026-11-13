@@ -989,6 +989,12 @@ void Aquamarine::CDRMBackend::beforePrimarySwitch() {
 
         cancelAsyncOutput(c->output.get(), true);
 
+        // The last buffer the consumer set stays in the state until the next one replaces it, a
+        // frame later. It is the old primary's: it would keep that GPU's allocator (and its fd)
+        // through a release, and be freed by a driver whose code may be gone by then.
+        if (c->output->state)
+            c->output->state->internalState.buffer.reset();
+
         // dropRendererState() empties the swapchain: remember what the consumer had set
         if (c->output->swapchain)
             savedSwapchainOptions.emplace_back(c->output, c->output->swapchain->currentOptions());
