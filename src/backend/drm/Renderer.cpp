@@ -379,6 +379,15 @@ bool CDRMRenderer::initDRMFormats() {
 }
 
 Aquamarine::CDRMRenderer::~CDRMRenderer() {
+    // the fence of the last blit: its fd stays open until the next blit, and a renderer that is
+    // destroyed (a released GPU, a primary switch) would leave a sync_file of its driver behind
+    if (egl.lastBlitSync && egl.display && proc.eglDestroySyncKHR)
+        proc.eglDestroySyncKHR(egl.display, egl.lastBlitSync);
+    if (egl.lastBlitSyncFD >= 0)
+        close(egl.lastBlitSyncFD);
+    egl.lastBlitSync   = nullptr;
+    egl.lastBlitSyncFD = -1;
+
     if (egl.display)
         eglMakeCurrent(egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 
