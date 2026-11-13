@@ -232,6 +232,6 @@ namespace Aquamarine {
 
       private:
         bool                     addGpu(const std::string& path);
-        std::vector<std::string> releasedGpus; // canonical paths
+        std::vector<std::string> releasedGpus; // each by the device behind its node (sysfs path)
     };
 };

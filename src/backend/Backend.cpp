@@ -313,6 +313,16 @@ static std::string canonicalPath(const std::string& path) {
     return ec ? path : CANONICAL.string();
 }
 
+// What a released GPU is remembered by: the device behind the node (its sysfs path), since the
+// node's number can change while the GPU is away (another DRM device takes it). Falls back to
+// the node's path.
+static std::string deviceIdentity(const std::string& path) {
+    const auto      CANONICAL = canonicalPath(path);
+    std::error_code ec;
+    const auto      DEVICE = std::filesystem::canonical("/sys/class/drm/" + std::filesystem::path(CANONICAL).filename().string() + "/device", ec);
+    return ec ? CANONICAL : DEVICE.string();
+}
+
 // With AQ_DRM_DEVICES set, a GPU that appears later is only taken if it is on that list,
 // matched by canonical path as CDRMBackend::scanGPUs does at start.
 static bool listedInEnv(const std::string& path) {
@@ -325,7 +335,7 @@ static bool listedInEnv(const std::string& path) {
 }
 
 void Aquamarine::CBackend::onNewGpu(std::string path) {
-    if (std::ranges::contains(releasedGpus, canonicalPath(path))) {
+    if (std::ranges::contains(releasedGpus, deviceIdentity(path))) {
         log(AQ_LOG_DEBUG, std::format("drm: Ignoring hot-added device {}, it was released", path));
         return;
     }
@@ -349,7 +359,7 @@ bool Aquamarine::CBackend::acquireGpu(const std::string& path) {
         }
     }
 
-    std::erase(releasedGpus, canonicalPath(path));
+    std::erase(releasedGpus, deviceIdentity(path));
     return addGpu(path);
 }
 
@@ -373,7 +383,7 @@ bool Aquamarine::CBackend::releaseGpu(SP<IBackendImplementation> gpu_) {
 
     std::erase(implementations, gpu_);
     std::erase(session->sessionDevices, DRM->gpu);
-    releasedGpus.emplace_back(canonicalPath(DRM->gpu->path));
+    releasedGpus.emplace_back(deviceIdentity(DRM->gpu->path));
 
     // the backend object may outlive this (a consumer's reference, a framebuffer being dropped): close the device itself
     DRM->gpu->closeDevice();
