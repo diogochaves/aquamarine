@@ -890,6 +890,10 @@ int CDRMRenderer::recreateBlitSync() {
         return -1;
     }
 
+    // NVIDIA's EGL returns this fd without close-on-exec (Mesa sets it); a consumer that
+    // forks and execs would hand the fence to every program it starts
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+
     egl.lastBlitSync   = sync;
     egl.lastBlitSyncFD = fd;
 
